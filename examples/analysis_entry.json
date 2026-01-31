@@ -1,0 +1,24 @@
+{
+  "title": "McCormick Logs Higher Sales, Gives Soft Full-Year 2026 Outlook",
+  "source": "WSJ",
+  "category": "Earnings",
+  "signal_strength": "High",
+  "time_horizon": "Immediate",
+  "signal_bullets": [
+    "Q4 sales $1.85B (+2.9%) slightly above consensus; adjusted EPS 86¢ missed consensus 88¢",
+    "FY26 guidance $3.05–$3.13 vs Street ~$3.21; management cites tariffs and elevated input costs"
+  ],
+  "mechanism": "Tariffs and input-cost inflation raise COGS and compress gross margin; if pricing and productivity gains do not fully offset, earnings guidance falls and the stock reprices immediately.",
+  "base_case": "Volume holds modestly, pricing benefits continue, enabling low-single-digit organic sales growth (1–3%) while cost actions partially offset tariffs/inflation; earnings land within guided range.",
+  "tail_risk": "Tariffs or trade costs re-accelerate and/or input inflation persists while pricing power fades, causing further margin compression, another guidance reset, and broader read-through to packaged-food profitability.",
+  "action": "Prepare/Monitor",
+  "action_triggers": [
+    "Track tariff/trade policy developments and company commentary on cost absorption vs pass-through",
+    "Watch gross margin and price/mix progression next quarter"
+  ],
+  "confidence": 4,
+  "tags": ["tariffs", "inflation", "consumer staples", "pricing", "earnings guidance"],
+  "reinforces": ["Structural inflation floor"],
+  "contradicts": [],
+  "updates_confidence": "+0.5 on near-term margin-pressure thesis for consumer staples exposed to tariffs/input costs"
+}
