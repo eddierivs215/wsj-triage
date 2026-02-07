@@ -1,3 +1,5 @@
+import logging
+import os
 import re
 import json
 import feedparser
@@ -6,6 +8,8 @@ from dateutil import parser as dateparser
 from jinja2 import Template
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, List
+
+log = logging.getLogger(__name__)
 
 # =========================
 # Configuration
@@ -39,6 +43,7 @@ RUN_STATE_FILE = BASE_DIR / "data" / "run_state.json"          # stores last run
 URL_AGE_FILE = BASE_DIR / "data" / "url_first_seen.json"       # for evergreen resurfacing badge
 THEMES_FILE = BASE_DIR / "config" / "themes.json"              # optional context display on dashboard
 EVERGREEN_DAYS = 90
+URL_PRUNE_DAYS = 180  # remove url_first_seen entries older than this
 
 
 # =========================
@@ -120,13 +125,18 @@ def is_recent(published_iso: str, hours: int = RECENT_HOURS) -> bool:
         return False
 
 def classify_category(title: str, summary: str) -> str:
+    cats = classify_categories(title, summary)
+    return cats[0]
+
+def classify_categories(title: str, summary: str) -> List[str]:
+    """Return all matching categories (primary first). Always at least one."""
     text = f"{title} {summary}"
-    for cat, rx in CATEGORY_RULES:
-        if rx.search(text):
-            return cat
-    if FRAMING_TERMS.search(text):
-        return "Narrative/Opinion"
-    return "Cyclical"
+    matched = [cat for cat, rx in CATEGORY_RULES if rx.search(text)]
+    if not matched:
+        if FRAMING_TERMS.search(text):
+            return ["Narrative/Opinion"]
+        return ["Cyclical"]
+    return matched
 
 def signal_strength(score: int) -> str:
     if score >= 70:
@@ -140,7 +150,7 @@ def time_horizon(category: str) -> str:
         return "Immediate"
     if category in ["Structural"]:
         return "Structural"
-    return "Medium"
+    return "Near-term"
 
 def confidence(score: int) -> int:
     if score >= 85:
@@ -153,10 +163,14 @@ def confidence(score: int) -> int:
         return 2
     return 1
 
-def score_item(title: str, summary: str, source: str) -> Tuple[int, List[str]]:
+def score_item(title: str, summary: str, source: str,
+               theme_triggers: Optional[List[Dict[str, Any]]] = None) -> Tuple[int, List[str], List[str]]:
+    """Score an item and return (score, reasons, matched_theme_names)."""
     text = f"{title} {summary}"
+    text_lower = text.lower()
     score = 50
     reasons: List[str] = []
+    matched_themes: List[str] = []
 
     if NUMERIC.search(text):
         score += 12
@@ -182,8 +196,19 @@ def score_item(title: str, summary: str, source: str) -> Tuple[int, List[str]]:
         score -= 20
         reasons.append("Opinion source")
 
+    # Theme-aware boost: +8 per matched theme (max one boost)
+    if theme_triggers:
+        for theme in theme_triggers:
+            triggers = theme.get("watch_triggers", []) or []
+            for trigger in triggers:
+                if trigger.lower() in text_lower:
+                    matched_themes.append(theme.get("name", ""))
+                    score += 8
+                    reasons.append(f"Theme match: {theme.get('name', '')}")
+                    break  # one match per theme is enough
+
     score = max(0, min(100, score))
-    return score, reasons
+    return score, reasons, matched_themes
 
 def load_json(path: Path, default: Any) -> Any:
     if path.exists():
@@ -194,7 +219,11 @@ def load_json(path: Path, default: Any) -> Any:
     return default
 
 def save_json(path: Path, obj: Any) -> None:
-    path.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
+    """Atomic write: write to temp file then rename to avoid corruption on crash."""
+    data = json.dumps(obj, indent=2, ensure_ascii=False)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(data, encoding="utf-8")
+    os.replace(tmp, path)
 
 def load_url_first_seen() -> Dict[str, str]:
     return load_json(URL_AGE_FILE, {})
@@ -220,13 +249,15 @@ def evergreen_badge(first_seen_iso: str) -> Tuple[bool, Optional[int]]:
         return (False, None)
     return (days >= EVERGREEN_DAYS, days)
 
-def build_schema(item: Dict[str, Any]) -> Dict[str, Any]:
+def build_schema(item: Dict[str, Any], theme_triggers: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     title = item["title"]
     summary = item["summary"]
     source = item["source"]
 
-    score, bullets = score_item(title, summary, source)
-    category = classify_category(title, summary)
+    score, bullets, matched_themes = score_item(title, summary, source, theme_triggers)
+    categories = classify_categories(title, summary)
+    category = categories[0]
+    secondary_categories = categories[1:]
     strength = signal_strength(score)
     horizon = time_horizon(category)
 
@@ -265,6 +296,8 @@ def build_schema(item: Dict[str, Any]) -> Dict[str, Any]:
         "url_first_seen_at": item.get("url_first_seen_at", ""),
         "url_age_days": age_days,
         "evergreen_resurfaced": bool(is_evergreen),
+        "matched_themes": matched_themes,
+        "secondary_categories": secondary_categories,
     }
 
 
@@ -285,13 +318,16 @@ HTML_TEMPLATE = Template(r"""
   .wrap { max-width:1100px; margin:24px auto; padding:0 16px; }
   .header { display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; }
   .meta { color:var(--muted); font-size:12px; }
-  .controls { margin:14px 0 18px; display:grid; grid-template-columns:1.2fr .9fr .7fr .8fr .7fr; gap:10px; }
+  .controls { margin:14px 0 18px; display:grid; grid-template-columns:1.2fr .9fr .7fr .7fr .8fr .7fr .7fr; gap:10px; }
+  .card.focused { outline:2px solid #5b8def; outline-offset:-2px; }
   input, select { width:100%; padding:10px 12px; border-radius:12px; border:1px solid #2a2d3a; background:#0f1118; color:var(--text); outline:none; }
   .card { background:var(--panel); border-radius:14px; padding:14px; margin-bottom:12px; border:1px solid #252839; }
   .chips { display:flex; flex-wrap:wrap; gap:8px; }
   .chip { display:inline-block; padding:5px 10px; border-radius:999px; font-size:11px; background:var(--chip); color:#ddd; border:1px solid #2b2e3c; }
   .chip.warn { border-color:rgba(245,197,66,.55); color:var(--warn); }
   .chip.new { border-color:rgba(142,240,166,.55); color:var(--new); }
+  .chip.theme { border-color:rgba(180,160,255,.55); color:#c4b5fd; }
+  .chip.secondary { border-color:rgba(100,180,255,.35); color:#93c5fd; font-style:italic; }
   .title { margin-top:10px; font-size:15px; font-weight:650; }
   .title a { color:#fff; text-decoration:none; }
   .title a:hover { text-decoration:underline; }
@@ -318,9 +354,11 @@ HTML_TEMPLATE = Template(r"""
   <div class="controls">
     <input id="q" placeholder="Search title…" />
     <select id="feed"><option value="">All feeds</option></select>
+    <select id="cat"><option value="">All categories</option></select>
     <select id="sig"><option value="">All signal</option><option>High</option><option>Medium</option><option>Low</option></select>
-    <select id="hzn"><option value="">All horizons</option><option>Immediate</option><option>Medium</option><option>Structural</option></select>
+    <select id="hzn"><option value="">All horizons</option><option>Immediate</option><option>Near-term</option><option>Structural</option></select>
     <select id="new"><option value="">New: all</option><option value="only">Only new</option><option value="no">Hide new</option></select>
+    <select id="sort"><option value="score">Sort: Score</option><option value="date">Sort: Date</option><option value="category">Sort: Category</option></select>
   </div>
 
   <div id="cards"></div>
@@ -328,15 +366,16 @@ HTML_TEMPLATE = Template(r"""
 
 <script>
 const DATA = {{ data | safe }};
-const ANALYZE_BASE = {{ analyze_base_json | safe }};
 const root = document.getElementById("cards");
 
 const els = {
   q: document.getElementById("q"),
   feed: document.getElementById("feed"),
+  cat: document.getElementById("cat"),
   sig: document.getElementById("sig"),
   hzn: document.getElementById("hzn"),
   newf: document.getElementById("new"),
+  sort: document.getElementById("sort"),
 };
 
 function uniq(arr) { return Array.from(new Set(arr.filter(Boolean))).sort(); }
@@ -347,9 +386,16 @@ uniq(DATA.map(x => x.feed)).forEach(f => {
   els.feed.appendChild(opt);
 });
 
+uniq(DATA.map(x => x.category)).forEach(c => {
+  const opt = document.createElement("option");
+  opt.value = c; opt.textContent = c;
+  els.cat.appendChild(opt);
+});
+
 function render() {
   const q = (els.q.value || "").toLowerCase().trim();
   const feed = els.feed.value;
+  const cat = els.cat.value;
   const sig = els.sig.value;
   const hzn = els.hzn.value;
   const newf = els.newf.value;
@@ -358,13 +404,21 @@ function render() {
 
   if (q) xs = xs.filter(x => (x.title || "").toLowerCase().includes(q));
   if (feed) xs = xs.filter(x => x.feed === feed);
+  if (cat) xs = xs.filter(x => x.category === cat || (x.secondary_categories || []).includes(cat));
   if (sig) xs = xs.filter(x => x.signal_strength === sig);
   if (hzn) xs = xs.filter(x => x.time_horizon === hzn);
 
   if (newf === "only") xs = xs.filter(x => x.new_since_last_run);
   if (newf === "no") xs = xs.filter(x => !x.new_since_last_run);
 
-  xs.sort((a,b) => (b.raw_score || 0) - (a.raw_score || 0));
+  const sortBy = els.sort.value;
+  if (sortBy === "date") {
+    xs.sort((a,b) => (b.published_at || "").localeCompare(a.published_at || ""));
+  } else if (sortBy === "category") {
+    xs.sort((a,b) => (a.category || "").localeCompare(b.category || "") || (b.raw_score||0) - (a.raw_score||0));
+  } else {
+    xs.sort((a,b) => (b.raw_score || 0) - (a.raw_score || 0));
+  }
 
   root.innerHTML = "";
   if (!xs.length) {
@@ -385,6 +439,10 @@ function render() {
 
     const newChip = x.new_since_last_run ? `<span class="chip new">NEW</span>` : "";
 
+    const secondaryCatChips = (x.secondary_categories || []).map(c => `<span class="chip secondary">${c}</span>`).join("");
+
+    const themeChips = (x.matched_themes || []).map(t => `<span class="chip theme">${t}</span>`).join("");
+
     const analyzeHref = `http://127.0.0.1:5050/analyze?u=${encodeURIComponent(x.url || "")}&t=${encodeURIComponent(x.title || "")}`;
 
 
@@ -393,10 +451,12 @@ function render() {
       <div class="chips">
         <span class="chip">${x.feed || "WSJ"}</span>
         <span class="chip">${x.category}</span>
+        ${secondaryCatChips}
         <span class="chip">${x.signal_strength}</span>
         <span class="chip">${x.action}</span>
         <span class="chip">Conf ${x.confidence}/5</span>
         ${newChip}
+        ${themeChips}
         ${evergreenChip}
       </div>
 
@@ -430,9 +490,40 @@ function render() {
 ["input","change"].forEach(evt => {
   els.q.addEventListener(evt, render);
   els.feed.addEventListener(evt, render);
+  els.cat.addEventListener(evt, render);
   els.sig.addEventListener(evt, render);
   els.hzn.addEventListener(evt, render);
   els.newf.addEventListener(evt, render);
+  els.sort.addEventListener(evt, render);
+});
+
+// Keyboard navigation
+let focusIdx = -1;
+function getCards() { return root.querySelectorAll(".card"); }
+function setFocus(idx) {
+  const cards = getCards();
+  if (!cards.length) return;
+  cards.forEach(c => c.classList.remove("focused"));
+  focusIdx = Math.max(0, Math.min(idx, cards.length - 1));
+  cards[focusIdx].classList.add("focused");
+  cards[focusIdx].scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA") return;
+  const cards = getCards();
+  if (e.key === "j") { setFocus(focusIdx + 1); e.preventDefault(); }
+  else if (e.key === "k") { setFocus(focusIdx - 1); e.preventDefault(); }
+  else if (e.key === "o" && focusIdx >= 0 && focusIdx < cards.length) {
+    const link = cards[focusIdx].querySelector(".title a");
+    if (link) window.open(link.href, "_blank");
+    e.preventDefault();
+  }
+  else if (e.key === "a" && focusIdx >= 0 && focusIdx < cards.length) {
+    const links = cards[focusIdx].querySelectorAll(".title a");
+    const analyzeLink = links.length > 1 ? links[1] : null;
+    if (analyzeLink) window.location.href = analyzeLink.href;
+    e.preventDefault();
+  }
 });
 
 render();
@@ -447,6 +538,8 @@ render();
 # =========================
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
+
     # Ensure directories exist
     (BASE_DIR / "data").mkdir(parents=True, exist_ok=True)
     (BASE_DIR / "output").mkdir(parents=True, exist_ok=True)
@@ -465,6 +558,11 @@ def main() -> None:
     for url in FEEDS:
         feed = feedparser.parse(url)
         feed_title = feed.feed.get("title", "WSJ RSS")
+
+        if feed.bozo:
+            log.warning("Feed parse error for %s: %s", url, feed.bozo_exception)
+        if not feed.entries:
+            log.warning("Feed returned 0 entries: %s", url)
 
         for e in feed.entries[:200]:
             title = (e.get("title") or "").strip()
@@ -498,6 +596,17 @@ def main() -> None:
                 "new_since_last_run": (link not in last_run_urls),
             })
 
+    # Prune old url_first_seen entries
+    prune_cutoff = datetime.now(timezone.utc) - timedelta(days=URL_PRUNE_DAYS)
+    pruned = 0
+    for u, ts in list(url_first_seen.items()):
+        age = url_age_days(ts)
+        if age is not None and age > URL_PRUNE_DAYS:
+            del url_first_seen[u]
+            pruned += 1
+    if pruned:
+        log.info("Pruned %d URLs older than %d days from url_first_seen", pruned, URL_PRUNE_DAYS)
+
     save_url_first_seen(url_first_seen)
 
     # Deduplicate by URL across feeds
@@ -512,36 +621,32 @@ def main() -> None:
         "last_run_urls": [it["link"] for it in items],
     })
 
-    schema_items = [build_schema(i) for i in items]
-
-    # TODO: analyze_base / ANALYZE_BASE is dead code. The template hardcodes the Flask
-    # route (http://127.0.0.1:5050/analyze) instead of using this file:// URI.
-    # Safe to remove in a future cleanup pass.
-    analyze_base = (BASE_DIR / "templates" / "analyze.html").resolve().as_uri()
-
-    themes_summary = ""
     themes_obj = load_json(THEMES_FILE, {})
+    active_themes = []
+    themes_summary = ""
     if isinstance(themes_obj, dict) and "active_themes" in themes_obj:
         try:
-            themes_summary = ", ".join([t.get("name", "") for t in themes_obj.get("active_themes", []) if t.get("name")])[:160]
+            active_themes = themes_obj.get("active_themes", [])
+            themes_summary = ", ".join([t.get("name", "") for t in active_themes if t.get("name")])[:160]
         except Exception:
             themes_summary = ""
+
+    schema_items = [build_schema(i, active_themes) for i in items]
 
     html = HTML_TEMPLATE.render(
         generated=datetime.now().strftime("%Y-%m-%d %H:%M"),
         recent_hours=RECENT_HOURS,
         data=json.dumps(schema_items, ensure_ascii=False),
-        analyze_base_json=json.dumps(analyze_base),
         themes_summary=themes_summary,
     )
 
     out = BASE_DIR / "output" / "triage.html"
     out.write_text(html, encoding="utf-8")
 
-    print(f"New URLs added to evergreen store this run: {total_seen_new}")
-    print(f"Items passing {RECENT_HOURS}h RSS cutoff (pre-dedupe): {total_recent}")
-    print(f"Items on dashboard (deduped): {len(items)}")
-    print(f"Wrote {out.resolve()}")
+    log.info("New URLs added to evergreen store this run: %d", total_seen_new)
+    log.info("Items passing %dh RSS cutoff (pre-dedupe): %d", RECENT_HOURS, total_recent)
+    log.info("Items on dashboard (deduped): %d", len(items))
+    log.info("Wrote %s", out.resolve())
 
 
 if __name__ == "__main__":

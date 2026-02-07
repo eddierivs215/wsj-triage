@@ -1,7 +1,12 @@
+import argparse
+import html
 import json
+import logging
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from collections import Counter
+
+log = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent  # project root (parent of src/)
 
@@ -43,35 +48,25 @@ def extract_first_json_object(text: str):
         return None
     s = text.strip()
 
-    # Fast path
+    # Fast path: whole line is a JSON object
     if s.startswith("{") and s.endswith("}"):
         return s
 
+    # Find the first '{' and try progressively longer substrings ending at each '}'
     start = s.find("{")
     if start == -1:
         return None
 
-    depth = 0
-    in_str = False
-    esc = False
-    for i in range(start, len(s)):
-        ch = s[i]
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == '"':
-                in_str = False
-        else:
-            if ch == '"':
-                in_str = True
-            elif ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    return s[start:i + 1]
+    # Try each closing brace from the end backwards for valid JSON
+    end = s.rfind("}")
+    while end >= start:
+        candidate = s[start:end + 1]
+        try:
+            json.loads(candidate)
+            return candidate
+        except json.JSONDecodeError:
+            end = s.rfind("}", start, end)
+
     return None
 
 
@@ -139,7 +134,7 @@ def pick_event_time(a: dict):
 
 
 def escape_html(s: str) -> str:
-    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return html.escape(s or "")
 
 
 def md_to_basic_html(md_text: str) -> str:
@@ -216,13 +211,15 @@ def md_to_basic_html(md_text: str) -> str:
 """
 
 
-def main():
+def main(days: int = 7):
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
+
     # Ensure directories exist
     (BASE_DIR / "data").mkdir(parents=True, exist_ok=True)
     (BASE_DIR / "output").mkdir(parents=True, exist_ok=True)
 
     now = datetime.now(timezone.utc)
-    week_ago = now - timedelta(days=7)
+    week_ago = now - timedelta(days=days)
 
     analyses = load_analysis_objects(LOG)
 
@@ -273,9 +270,9 @@ def main():
 
     lines = []
     lines.append("# Weekly WSJ Signal Memo\n")
-    lines.append(f"- Window: last 7 days (generated {now.isoformat()})")
+    lines.append(f"- Window: last {days} days (generated {now.isoformat()})")
     lines.append(f"- Log source: {LOG.name}")
-    lines.append(f"- Parsed entries (last 7d): {len(recent)}\n")
+    lines.append(f"- Parsed entries (last {days}d): {len(recent)}\n")
 
     lines.append("## Theme reinforcement\n")
     if reinforce:
@@ -302,7 +299,7 @@ def main():
         for ts, key, prev, curr, title in action_changes[:30]:
             lines.append(f"- {ts} — **{key}**: {prev} → {curr} ({title})")
     else:
-        lines.append("- No action flips detected in the last 7 days.")
+        lines.append(f"- No action flips detected in the last {days} days.")
 
     lines.append("\n## Confidence updates\n")
     if confidence_changes:
@@ -323,9 +320,13 @@ def main():
     OUT_MD.write_text(md_text, encoding="utf-8")
     OUT_HTML.write_text(md_to_basic_html(md_text), encoding="utf-8")
 
-    print(f"Wrote {OUT_MD.resolve()}")
-    print(f"Wrote {OUT_HTML.resolve()}")
+    log.info("Parsed %d entries from last 7 days", len(recent))
+    log.info("Wrote %s", OUT_MD.resolve())
+    log.info("Wrote %s", OUT_HTML.resolve())
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Generate WSJ Signal weekly memo")
+    parser.add_argument("--days", type=int, default=7, help="Analysis window in days (default: 7)")
+    args = parser.parse_args()
+    main(days=args.days)

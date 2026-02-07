@@ -1,0 +1,140 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Analysis Log</title>
+  <style>
+    :root { --bg:#0b0c10; --panel:#161821; --chip:#222; --text:#eee; --muted:#aaa; }
+    body { font-family:-apple-system,system-ui; background:var(--bg); color:var(--text); margin:0; }
+    .wrap { max-width:1100px; margin:24px auto; padding:0 16px; }
+    .controls { margin:14px 0 18px; display:grid; grid-template-columns:1.5fr 1fr 1fr 1fr; gap:10px; }
+    input, select { width:100%; padding:10px 12px; border-radius:12px; border:1px solid #2a2d3a; background:#0f1118; color:var(--text); outline:none; box-sizing:border-box; }
+    .card { background:var(--panel); border-radius:14px; padding:14px; margin-bottom:12px; border:1px solid #252839; }
+    .chips { display:flex; flex-wrap:wrap; gap:8px; }
+    .chip { display:inline-block; padding:5px 10px; border-radius:999px; font-size:11px; background:var(--chip); color:#ddd; border:1px solid #2b2e3c; }
+    .meta { color:var(--muted); font-size:12px; }
+    .title { margin-top:10px; font-size:15px; font-weight:650; }
+    .title a { color:#fff; text-decoration:none; }
+    .title a:hover { text-decoration:underline; }
+    .details { margin-top:8px; font-size:13px; color:#ddd; line-height:1.5; }
+    .empty { padding:16px; border:1px dashed #2a2d3a; border-radius:14px; color:var(--muted); }
+    .nav { margin-bottom:12px; }
+    .nav a { color:#9ad; text-decoration:none; font-size:13px; }
+    .nav a:hover { text-decoration:underline; }
+    details { margin-top:8px; }
+    summary { cursor:pointer; color:#bbb; font-size:13px; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="nav"><a href="/">← Back to Dashboard</a></div>
+  <h2 style="margin:0">Analysis Log</h2>
+  <div class="meta" id="count"></div>
+
+  <div class="controls">
+    <input id="q" placeholder="Search title…" />
+    <select id="cat"><option value="">All categories</option></select>
+    <select id="sig"><option value="">All signal</option><option>High</option><option>Medium</option><option>Low</option></select>
+    <select id="act"><option value="">All actions</option><option>Act</option><option>Prepare/Monitor</option><option>No Action</option></select>
+  </div>
+
+  <div id="cards"></div>
+</div>
+
+<script>
+let DATA = [];
+const root = document.getElementById("cards");
+const countEl = document.getElementById("count");
+const els = {
+  q: document.getElementById("q"),
+  cat: document.getElementById("cat"),
+  sig: document.getElementById("sig"),
+  act: document.getElementById("act"),
+};
+
+async function load() {
+  try {
+    const r = await fetch("/api/analyses");
+    DATA = await r.json();
+    DATA.reverse(); // newest first
+
+    const cats = Array.from(new Set(DATA.map(x => x.category).filter(Boolean))).sort();
+    cats.forEach(c => {
+      const opt = document.createElement("option");
+      opt.value = c; opt.textContent = c;
+      els.cat.appendChild(opt);
+    });
+
+    render();
+  } catch(e) {
+    root.innerHTML = '<div class="empty">Could not load analyses. Is the server running?</div>';
+  }
+}
+
+function render() {
+  const q = (els.q.value || "").toLowerCase().trim();
+  const cat = els.cat.value;
+  const sig = els.sig.value;
+  const act = els.act.value;
+
+  let xs = DATA.slice();
+  if (q) xs = xs.filter(x => (x.title || "").toLowerCase().includes(q));
+  if (cat) xs = xs.filter(x => x.category === cat);
+  if (sig) xs = xs.filter(x => x.signal_strength === sig);
+  if (act) xs = xs.filter(x => x.action === act);
+
+  countEl.textContent = `Showing ${xs.length} of ${DATA.length} analyses`;
+
+  root.innerHTML = "";
+  if (!xs.length) {
+    root.innerHTML = '<div class="empty">No analyses match your filters.</div>';
+    return;
+  }
+
+  for (const x of xs) {
+    const d = document.createElement("div");
+    d.className = "card";
+
+    const tags = (x.tags || []).map(t => `<span class="chip">${t}</span>`).join("");
+    const reinforces = (x.reinforces || []).map(t => `<span class="chip" style="border-color:rgba(142,240,166,.4);color:#8ef0a6">+${t}</span>`).join("");
+    const contradicts = (x.contradicts || []).map(t => `<span class="chip" style="border-color:rgba(255,180,180,.4);color:#ffb4b4">-${t}</span>`).join("");
+
+    d.innerHTML = `
+      <div class="chips">
+        <span class="chip">${x.category || ""}</span>
+        <span class="chip">${x.signal_strength || ""}</span>
+        <span class="chip">${x.action || ""}</span>
+        <span class="chip">Conf ${x.confidence || "?"}/5</span>
+        <span class="chip">${x.time_horizon || ""}</span>
+        ${tags}${reinforces}${contradicts}
+      </div>
+      <div class="title">
+        ${x.url ? `<a href="${x.url}" target="_blank" rel="noopener">${x.title || "(untitled)"}</a>` : (x.title || "(untitled)")}
+      </div>
+      <div class="meta">${x.published_at || x.created_at || ""} • ${x.source || "WSJ"}</div>
+      <div class="details"><strong>Mechanism:</strong> ${x.mechanism || "—"}</div>
+      ${x.base_case ? `<div class="details"><strong>Base case:</strong> ${x.base_case}</div>` : ""}
+      ${x.tail_risk ? `<div class="details"><strong>Tail risk:</strong> ${x.tail_risk}</div>` : ""}
+      <details>
+        <summary>Full details</summary>
+        ${x.signal_bullets ? `<div class="details"><strong>Signal bullets</strong></div><ul>${x.signal_bullets.map(b => `<li>${b}</li>`).join("")}</ul>` : ""}
+        ${x.action_triggers ? `<div class="details"><strong>Action triggers</strong></div><ul>${x.action_triggers.map(t => `<li>${t}</li>`).join("")}</ul>` : ""}
+        ${x.updates_confidence ? `<div class="details"><strong>Confidence update:</strong> ${x.updates_confidence}</div>` : ""}
+      </details>
+    `;
+    root.appendChild(d);
+  }
+}
+
+["input","change"].forEach(evt => {
+  els.q.addEventListener(evt, render);
+  els.cat.addEventListener(evt, render);
+  els.sig.addEventListener(evt, render);
+  els.act.addEventListener(evt, render);
+});
+
+load();
+</script>
+</body>
+</html>
