@@ -18,16 +18,12 @@
     }
     textarea { min-height:220px; resize:vertical; }
     button { cursor:pointer; font-weight:600; margin-top:8px; background:#1f2230; }
-    button:disabled { opacity:0.5; cursor:not-allowed; }
-    .btn-primary { background:#2563eb; border-color:#3b74ed; color:#fff; }
-    .btn-primary:hover:not(:disabled) { background:#1d4ed8; }
     pre { white-space:pre-wrap; word-wrap:break-word; margin:0; }
     .btnrow { display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; }
     .btnrow button { width:auto; }
     .ok { color:#8ef0a6; }
     .err { color:#ffb4b4; }
     code { background:rgba(255,255,255,.08); padding:2px 6px; border-radius:8px; }
-    .narrative { font-size:13px; line-height:1.65; white-space:pre-wrap; color:#ddd; padding-top:4px; }
     .section-label { font-size:11px; font-weight:700; text-transform:uppercase;
       letter-spacing:.06em; color:#6b7fa3; margin-bottom:4px; }
   </style>
@@ -35,7 +31,7 @@
 <body>
   <div class="wrap">
     <h2 style="margin:0">WSJ Article Analyzer</h2>
-    <div class="muted" style="margin-top:4px">Paste article → Analyze with AI → review → Save to log.</div>
+    <div class="muted" style="margin-top:4px">Generate prompt → run in model → paste JSON → Save to log.</div>
 
     <!-- ── Input card ───────────────────────────────────────────── -->
     <div class="card">
@@ -51,34 +47,27 @@
       </div>
 
       <div style="margin-top:10px">
-        <div class="muted">Article text</div>
-        <textarea id="article" placeholder="Paste the article body here…&#10;&#10;(Tip: if you copied the article before opening this page, it may auto-fill below.)"></textarea>
-      </div>
-
-      <div class="btnrow">
-        <button class="btn-primary" id="aiBtn" onclick="analyzeWithAI()">Analyze with AI</button>
-        <button id="genBtn" onclick="togglePrompt()">Generate prompt</button>
-        <button id="copyBtn" onclick="copyPrompt()" style="display:none">Copy prompt</button>
+        <div class="muted">Article text (paste from WSJ)</div>
+        <textarea id="article" placeholder="Paste the article body here…"></textarea>
       </div>
 
       <div id="clipMsg" class="muted" style="margin-top:6px; display:none"></div>
+
+      <div class="btnrow">
+        <button onclick="generate()">Generate prompt</button>
+        <button onclick="copyPrompt()">Copy prompt</button>
+      </div>
     </div>
 
-    <!-- ── Prompt card (hidden; manual fallback) ────────────────── -->
-    <div class="card" id="promptCard" style="display:none">
+    <!-- ── Prompt card ──────────────────────────────────────────── -->
+    <div class="card">
       <div class="section-label">Prompt — paste into ChatGPT / Claude</div>
       <pre id="out"></pre>
     </div>
 
-    <!-- ── Narrative card (hidden; shown after AI analysis) ─────── -->
-    <div class="card" id="narrativeCard" style="display:none">
-      <div class="section-label">Narrative analysis</div>
-      <div id="narrativeOut" class="narrative"></div>
-    </div>
-
     <!-- ── JSON save card ───────────────────────────────────────── -->
     <div class="card">
-      <div class="section-label">JSON output — auto-filled by "Analyze with AI", or paste manually</div>
+      <div class="section-label">Model JSON output — paste only the JSON object here</div>
       <textarea id="jsonOut" style="min-height:160px; font-family:monospace; font-size:12px;"
         placeholder='{"title":"…","source":"WSJ", …}'></textarea>
 
@@ -110,86 +99,21 @@ loadThemes();
 // ── Clipboard auto-fill ──────────────────────────────────────────────────────
 async function tryClipboardFill(){
   const articleEl = document.getElementById("article");
-  if (articleEl.value.trim()) return;  // already has content from URL params or user
+  if (articleEl.value.trim()) return;
   try {
     const text = await navigator.clipboard.readText();
     if (text && text.trim().length > 100) {
       articleEl.value = text.trim();
-      showClipMsg("Article auto-filled from clipboard.");
+      const msg = document.getElementById("clipMsg");
+      msg.textContent = "Article auto-filled from clipboard.";
+      msg.style.display = "";
+      setTimeout(() => { msg.style.display = "none"; }, 4000);
     }
-  } catch(e) {
-    // Permission denied or API unavailable — silent fail
-  }
+  } catch(e) {}
 }
-// Attempt after a brief delay so the browser considers the page "interactive"
 setTimeout(tryClipboardFill, 300);
 
-function showClipMsg(msg){
-  const el = document.getElementById("clipMsg");
-  el.textContent = msg;
-  el.style.display = "";
-  setTimeout(() => { el.style.display = "none"; }, 4000);
-}
-
-// ── AI analysis ──────────────────────────────────────────────────────────────
-async function analyzeWithAI(){
-  const url     = document.getElementById("url").value.trim();
-  const title   = document.getElementById("title").value.trim();
-  const article = document.getElementById("article").value.trim();
-
-  if (!article){
-    setStatus("Paste the article text first.", "err");
-    return;
-  }
-
-  const btn = document.getElementById("aiBtn");
-  btn.disabled = true;
-  btn.textContent = "Analyzing…";
-  setStatus("Calling Claude API…", "");
-
-  // Hide stale narrative while loading
-  document.getElementById("narrativeCard").style.display = "none";
-
-  try {
-    const r = await fetch("/api/analyze", {
-      method: "POST",
-      headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({ url, title, article, themes: ACTIVE_THEMES })
-    });
-    const data = await r.json().catch(() => ({}));
-    if (r.ok && data.ok) {
-      document.getElementById("jsonOut").value = JSON.stringify(data.analysis, null, 2);
-      if (data.narrative) {
-        document.getElementById("narrativeOut").textContent = data.narrative;
-        document.getElementById("narrativeCard").style.display = "";
-      }
-      setStatus("Analysis complete — review JSON below, then Save.", "ok");
-    } else {
-      setStatus("Analysis failed: " + (data.error || ("HTTP " + r.status)), "err");
-    }
-  } catch(e) {
-    setStatus("Analysis failed: could not reach local server.", "err");
-  } finally {
-    btn.disabled = false;
-    btn.textContent = "Analyze with AI";
-  }
-}
-
-// ── Manual prompt fallback ───────────────────────────────────────────────────
-let promptVisible = false;
-
-function togglePrompt(){
-  if (!promptVisible) {
-    generate();
-    document.getElementById("promptCard").style.display = "";
-    document.getElementById("copyBtn").style.display = "";
-    document.getElementById("genBtn").textContent = "Regenerate prompt";
-    promptVisible = true;
-  } else {
-    generate(); // regenerate in place
-  }
-}
-
+// ── Generate prompt ──────────────────────────────────────────────────────────
 function generate(){
   const url     = document.getElementById("url").value.trim();
   const title   = document.getElementById("title").value.trim();
@@ -259,7 +183,6 @@ async function copyPrompt(){
 // ── Save ─────────────────────────────────────────────────────────────────────
 function clearJson(){
   document.getElementById("jsonOut").value = "";
-  document.getElementById("narrativeCard").style.display = "none";
   setStatus("", "");
 }
 
@@ -272,7 +195,7 @@ function setStatus(msg, kind){
 async function saveToLog(){
   const raw = document.getElementById("jsonOut").value.trim();
   if (!raw){
-    setStatus("Paste (or generate) the JSON object first.", "err");
+    setStatus("Paste the JSON object first.", "err");
     return;
   }
 
@@ -286,8 +209,8 @@ async function saveToLog(){
 
   if (!obj.published_at) obj.published_at = new Date().toISOString();
   if (!obj.source) obj.source = "WSJ";
-  obj.url       = document.getElementById("url").value.trim() || obj.url;
-  obj.title     = document.getElementById("title").value.trim() || obj.title;
+  obj.url        = document.getElementById("url").value.trim() || obj.url;
+  obj.title      = document.getElementById("title").value.trim() || obj.title;
   obj.created_at = new Date().toISOString();
 
   try {
