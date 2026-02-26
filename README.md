@@ -1,6 +1,6 @@
 # wsj-triage
 
-> v0.1.0 — Local-first research system for identifying durable, decision-relevant mechanisms in news.
+> v0.3.0 — Local-first research system for identifying durable, decision-relevant mechanisms in news.
 
 Not a news summarizer. Not a trading system. A tool for reading less while missing less.
 
@@ -41,7 +41,7 @@ News → Mechanism → Impact Vectors → Time Horizon → Action Stance → Mem
 
 **Time horizons**: Immediate, Near-term, Structural
 
-**Action stances**: No Action, Monitor, Prepare, Act
+**Action stances (analysis only)**: No Action, Prepare/Monitor, Act
 
 ---
 
@@ -50,7 +50,7 @@ News → Mechanism → Impact Vectors → Time Horizon → Action Stance → Mem
 | Principle | Implication |
 |-----------|-------------|
 | **Mechanism-first** | Extract *why* something matters, not *what* happened |
-| **Triage ≠ Analysis** | Scoring what to read is separate from interpreting what it means; triage never emits "Act" |
+| **Triage ≠ Analysis** | Triage decides Read vs Skip only; it never emits "Act" — that requires deep-dive analysis |
 | **Human-in-the-loop** | All analyses are manually created; automation supports, never replaces, judgment |
 | **Longitudinal memory** | URL history, analysis log, and themes persist across sessions |
 | **Explainability** | Heuristic scoring with visible rules; no opaque models |
@@ -82,37 +82,43 @@ News → Mechanism → Impact Vectors → Time Horizon → Action Stance → Mem
 
 ## Run Modes
 
-This system has **two distinct run modes**:
+All commands go through the unified `run.py` entry point.
 
-### 1. Triage (file-based, no server required)
+### 1. Triage
 
-Generate the dashboard as a static HTML file:
+Fetch RSS, score articles, write the dashboard:
 
 ```bash
-python src/triage.py
+python run.py triage
 # Output: output/triage.html
 ```
 
-Open `output/triage.html` directly in a browser to review scored articles. The "Analyze" links will not work without the server running.
+> **Note**: The dashboard's "Analyze" links use relative paths (`/analyze?...`) and only work when the server is running. Opening `output/triage.html` directly as a file will display the dashboard but those links won't work.
 
 ### 2. Analysis (requires Flask server)
 
-To save analyses, the local server must be running:
-
 ```bash
-python src/server.py
+python run.py serve          # default port 5050
+python run.py serve --port 8080
 # → http://localhost:5050
 ```
 
 The server provides:
-- `GET /` — Serves the triage dashboard
-- `GET /analyze` — Serves the analysis form (pre-filled from URL params)
-- `GET /themes` — Returns active themes as JSON
-- `POST /save` — Appends a JSON analysis to `data/analysis_log.jsonl`
+- `GET /` — Serves the triage dashboard (regenerate first with `python run.py triage`)
+- `GET /analyze` — Analysis form, pre-filled from URL params
+- `GET /analyses` — Browse the analysis log
+- `GET /themes` — Active themes as JSON
+- `POST /save` — Appends a validated JSON analysis to `data/analysis_log.jsonl`
 
-**Workflow**: Dashboard → click "Analyze" → fill form → paste JSON from LLM → Save to log.
+**Workflow**: `python run.py triage` → `python run.py serve` → open dashboard → filter to Read items → click "Analyze" → generate prompt → run in LLM → paste JSON → Save.
 
-The analysis form uses relative fetch calls (`/save`, `/themes`) that require the Flask server.
+### 3. Synthesis
+
+```bash
+python run.py synthesis          # default: last 7 days
+python run.py synthesis --days 14
+# Output: output/weekly_memo.md, output/weekly_memo.html
+```
 
 ---
 
@@ -122,8 +128,8 @@ The analysis form uses relative fetch calls (`/save`, `/themes`) that require th
 wsj-triage/
 ├── README.md
 ├── requirements.txt
+├── run.py                  # Unified CLI entry point
 ├── .gitignore
-├── migrate.sh              # One-time migration script
 │
 ├── src/
 │   ├── triage.py           # RSS fetch + heuristic scoring → dashboard
@@ -131,13 +137,15 @@ wsj-triage/
 │   └── server.py           # Local Flask server for analysis workflow
 │
 ├── templates/
-│   └── analyze.html        # Manual analysis form UI
+│   ├── analyze.html        # Manual analysis form UI
+│   └── analyses.html       # Analysis log browser
 │
 ├── config/
-│   └── themes.json         # Active themes + watch triggers
+│   ├── themes.json         # Active themes + watch triggers + keywords
+│   └── scoring.json        # Tunable score thresholds (no code edits needed)
 │
 ├── data/                   # Persistent state (human-managed analyses)
-│   ├── analysis_log.jsonl  # Append-only log of manual analyses
+│   ├── analysis_log.jsonl  # Append-only log of manual analyses (compact JSON Lines)
 │   ├── url_first_seen.json # URL → first-seen timestamp (evergreen detection)
 │   └── run_state.json      # Last run timestamp + URLs (new item detection)
 │
@@ -145,6 +153,11 @@ wsj-triage/
 │   ├── triage.html         # Generated dashboard
 │   ├── weekly_memo.md      # Generated synthesis
 │   └── weekly_memo.html
+│
+├── tests/
+│   ├── test_triage.py      # Scoring, classification, triage decision
+│   ├── test_synthesis.py   # JSONL loading, helpers
+│   └── test_server.py      # /save validation, enum enforcement
 │
 └── examples/
     └── analysis_entry.json # Schema reference
@@ -157,45 +170,64 @@ wsj-triage/
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  1. TRIAGE (automated)                                                  │
-│     python src/triage.py                                                │
+│     python run.py triage                                                │
 │     → Fetches RSS, scores articles, writes output/triage.html           │
+│     → Logs calibration: High/Medium/Low % and Read/Skip counts          │
 └─────────────────────────────────────────────────────────────────────────┘
                                     ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  2. READ (manual)                                                       │
-│     Open dashboard, filter by signal strength, read high-signal items   │
+│     python run.py serve → open http://localhost:5050                    │
+│     Filter to "Read" decisions; skip Low-signal / Noise items           │
 └─────────────────────────────────────────────────────────────────────────┘
                                     ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  3. ANALYZE (manual, requires server)                                   │
-│     python src/server.py                                                │
-│     Click "Analyze" → Generate prompt → Run in LLM → Paste JSON → Save  │
+│     Click "Analyze" → Generate prompt → Run in LLM → Paste JSON → Save │
 │     → Appends to data/analysis_log.jsonl                                │
 └─────────────────────────────────────────────────────────────────────────┘
                                     ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  4. SYNTHESIZE (automated)                                              │
-│     python src/synthesis.py                                             │
+│     python run.py synthesis                                             │
 │     → Reads analysis_log.jsonl, writes weekly_memo.md/.html             │
+│     → Opens with "Act items" section; tracks stance changes over time   │
 └─────────────────────────────────────────────────────────────────────────┘
                                     ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  5. REFLECT (manual)                                                    │
-│     Review memo: theme reinforcements, contradictions, action flips     │
+│     Review memo: Act items, theme reinforcements, stance changes        │
 │     Update themes.json if convictions change                            │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Analysis Schema
+## Triage vs Analysis: Two Distinct Contracts
 
-Each entry in `data/analysis_log.jsonl` is a JSON object (one per line):
+The system enforces a hard boundary between what triage produces and what analysis records.
+
+### Triage output (`triage.py` → dashboard)
+
+| Field | Values | Notes |
+|-------|--------|-------|
+| `signal_strength` | `High \| Medium \| Low` | Derived from heuristic score |
+| `triage_decision` | `Read \| Skip` | The only output that matters for workflow |
+| `time_horizon` | `Immediate \| Near-term \| Structural` | Text-cue + category default |
+| `confidence` | 1–5 | Derived from score; not a human judgment |
+| `mechanism` | *(empty)* | Populated only in the analysis stage |
+
+Triage **never** emits `Act` or a mechanism. Doing so would claim interpretation that hasn't happened.
+
+### Analysis log (`data/analysis_log.jsonl`)
+
+Each entry is a compact JSON object (one per line). The server rejects any payload containing `triage_decision` — the two schemas must not bleed into each other.
 
 ```json
 {
   "title": "Article headline",
   "source": "WSJ",
+  "published_at": "2026-01-15T10:00:00+00:00",
   "category": "Earnings | Policy/Regulatory | Structural | Markets | Geopolitics | Cyclical | Narrative/Opinion | Noise",
   "signal_strength": "High | Medium | Low",
   "time_horizon": "Immediate | Near-term | Structural",
@@ -203,9 +235,9 @@ Each entry in `data/analysis_log.jsonl` is a JSON object (one per line):
   "mechanism": "The causal chain that makes this matter",
   "base_case": "Most likely outcome given this signal",
   "tail_risk": "Low-probability but consequential alternative",
-  "action": "No Action | Monitor | Prepare | Act",
+  "action": "No Action | Prepare/Monitor | Act",
   "action_triggers": ["What would change the action stance"],
-  "confidence": 1-5,
+  "confidence": 3,
   "tags": ["topic1", "topic2"],
   "reinforces": ["theme or prior view this supports"],
   "contradicts": ["theme or prior view this challenges"],
@@ -217,40 +249,32 @@ See `examples/analysis_entry.json` for a complete example.
 
 ---
 
-## Setup
+## Scoring
 
-```bash
-# Clone and enter directory
-cd wsj-triage
+Scores are computed in `triage.py` via additive heuristics. Thresholds are in `config/scoring.json` and tunable without code edits.
 
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+**Default thresholds:**
 
-# Install dependencies
-pip install -r requirements.txt
+| Band | Score |
+|------|-------|
+| High | ≥ 62 |
+| Medium | ≥ 45 |
+| Low | < 45 |
 
-# (If migrating from flat structure) Run migration
-chmod +x migrate.sh && ./migrate.sh
-```
+**Score components (baseline = 35):**
 
----
+| Signal | Δ Score |
+|--------|---------|
+| Quantitative data present | +12 |
+| High-signal category (Policy/Regulatory, Earnings, Structural) | +12 |
+| Theme phrase match (`watch_triggers`) | +8 |
+| Theme keyword match (`keywords_any`, requires 2 hits or headline+body) | +5 |
+| Market-move headline ("stocks rose/fell") | −18 |
+| Framing/explainer language ("opinion", "why", "how to") | −14 |
+| Opinion source | −20 |
+| Hedging/modality language ("could", "might", "fears") | −4 |
 
-## Quick Start
-
-```bash
-# 1. Generate triage dashboard
-python src/triage.py
-
-# 2. Start server for analysis workflow
-python src/server.py &
-
-# 3. Open dashboard
-open http://localhost:5050  # or visit in browser
-
-# 4. (After logging analyses) Generate weekly memo
-python src/synthesis.py
-```
+**Calibration**: Every run logs `Signal bands — High:N (X%)  Medium:N (X%)  Low:N (X%)` and `Triage decisions — Read:N  Skip:N`. If Medium dominates, lower `high_threshold` in `config/scoring.json`.
 
 ---
 
@@ -264,16 +288,59 @@ Edit `config/themes.json` to define the persistent forces you're tracking:
     {
       "name": "AI infrastructure constraints",
       "thesis": "AI growth is bounded by electricity, copper, and memory supply",
-      "watch_triggers": ["project delays", "supply lock-ins", "grid constraints"]
+      "watch_triggers": [
+        "grid interconnection constraints",
+        "HBM allocation headlines"
+      ],
+      "keywords_any": [
+        "HBM", "interconnect", "grid constraint",
+        "data center capacity", "chip shortage"
+      ]
     }
   ]
 }
 ```
 
+**Matching logic**: `watch_triggers` are matched as exact phrases (higher precision, +8 score). `keywords_any` are matched as individual tokens but require **2 distinct hits** anywhere in the text, or **1 hit in the headline + 1 anywhere** (+5 score). This prevents single generic keywords from firing false positives.
+
 Themes appear in:
 - The dashboard header (active themes loaded)
 - The analysis prompt (for LLM context)
 - The weekly memo (reinforcements/contradictions)
+
+---
+
+## Setup
+
+```bash
+cd wsj-triage
+
+python -m venv .venv
+source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+
+pip install -r requirements.txt
+
+# Run tests
+python -m pytest tests/ -v
+```
+
+---
+
+## Quick Start
+
+```bash
+# 1. Generate triage dashboard
+python run.py triage
+
+# 2. Start server
+python run.py serve
+
+# 3. Open dashboard in browser
+open http://localhost:5050
+
+# 4. (After logging analyses) Generate weekly memo
+python run.py synthesis
+```
 
 ---
 
