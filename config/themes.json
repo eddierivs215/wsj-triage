@@ -4,10 +4,13 @@
       "name": "AI infrastructure constraints",
       "thesis": "AI growth is bounded by electricity, copper, and memory supply; implies structural cost pressure and capex intensity.",
       "watch_triggers": [
-        "project delays",
-        "supply lock-ins",
         "grid interconnection constraints",
         "HBM allocation headlines"
+      ],
+      "keywords_any": [
+        "HBM", "high bandwidth memory", "interconnect", "grid constraint",
+        "power capacity", "data center capacity", "data center delay",
+        "chip shortage", "semiconductor shortage", "capex crunch"
       ]
     },
     {
@@ -15,9 +18,12 @@
       "thesis": "Physical constraints and deglobalization create persistent cost pressure even if headline inflation moderates.",
       "watch_triggers": [
         "input cost pass-through",
-        "margin compression",
-        "pricing power language",
-        "wage indexation"
+        "pricing power language"
+      ],
+      "keywords_any": [
+        "input costs", "pricing power", "margin pressure", "wage inflation",
+        "cost pass-through", "deglobalization", "reshoring", "near-shoring",
+        "wage indexation", "margin compression"
       ]
     },
     {
@@ -25,9 +31,12 @@
       "thesis": "Sustained retail participation changes liquidity, volatility, and product demand across markets.",
       "watch_triggers": [
         "options volume records",
-        "brokerage account growth",
-        "product expansion (crypto, private markets)",
-        "regulatory responses"
+        "brokerage account growth"
+      ],
+      "keywords_any": [
+        "options volume", "retail trading", "brokerage accounts",
+        "zero-commission", "meme stock", "crypto expansion",
+        "private markets access", "fractional shares"
       ]
     }
   ]

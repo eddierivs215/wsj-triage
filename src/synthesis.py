@@ -10,9 +10,9 @@ log = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent  # project root (parent of src/)
 
-LOG = BASE_DIR / "data" / "analysis_log.jsonl"
+LOG    = BASE_DIR / "data" / "analysis_log.jsonl"
 THEMES = BASE_DIR / "config" / "themes.json"
-OUT_MD = BASE_DIR / "output" / "weekly_memo.md"
+OUT_MD   = BASE_DIR / "output" / "weekly_memo.md"
 OUT_HTML = BASE_DIR / "output" / "weekly_memo.html"
 
 
@@ -40,92 +40,27 @@ def load_themes():
     return {"active_themes": []}
 
 
-def extract_first_json_object(text: str):
-    """
-    Best-effort: extract the first {...} JSON object from a line that may contain extra text.
-    """
-    if not text:
-        return None
-    s = text.strip()
-
-    # Fast path: whole line is a JSON object
-    if s.startswith("{") and s.endswith("}"):
-        return s
-
-    # Find the first '{' and try progressively longer substrings ending at each '}'
-    start = s.find("{")
-    if start == -1:
-        return None
-
-    # Try each closing brace from the end backwards for valid JSON
-    end = s.rfind("}")
-    while end >= start:
-        candidate = s[start:end + 1]
-        try:
-            json.loads(candidate)
-            return candidate
-        except json.JSONDecodeError:
-            end = s.rfind("}", start, end)
-
-    return None
-
-
-def coerce_to_object(parsed):
-    """
-    If parsed is a dict -> return.
-    If parsed is a JSON string containing an object -> parse again.
-    Else None.
-    """
-    if isinstance(parsed, dict):
-        return parsed
-    if isinstance(parsed, str):
-        inner = parsed.strip()
-        if inner.startswith("{") and inner.endswith("}"):
-            try:
-                inner_parsed = json.loads(inner)
-                if isinstance(inner_parsed, dict):
-                    return inner_parsed
-            except Exception:
-                return None
-    return None
-
-
 def load_analysis_objects(path: Path):
     """
     Reads analysis_log.jsonl returning a list of dict entries.
-    Skips non-JSON lines safely.
+
+    The file must be compact JSON Lines (one JSON object per line), which is
+    what server.py /save produces. Non-JSON lines (narrative text, blank lines,
+    comments) are silently skipped — no rfind hacks.
     """
     items = []
     if not path.exists():
         return items
-
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
         if not line:
             continue
-
-        obj = None
-
-        # Try parse whole line as JSON
         try:
-            parsed = json.loads(line)
-            obj = coerce_to_object(parsed)
-        except Exception:
-            obj = None
-
-        # If failed, try extracting JSON substring
-        if obj is None:
-            candidate = extract_first_json_object(line)
-            if candidate:
-                try:
-                    parsed = json.loads(candidate)
-                    obj = coerce_to_object(parsed)
-                except Exception:
-                    obj = None
-
-        if isinstance(obj, dict):
-            items.append(obj)
-
+            obj = json.loads(line)
+            if isinstance(obj, dict):
+                items.append(obj)
+        except json.JSONDecodeError:
+            pass  # skip narrative text, malformed lines
     return items
 
 
@@ -143,7 +78,7 @@ def md_to_basic_html(md_text: str) -> str:
     - # / ## / ### headings
     - bullet lists starting with "- "
     - paragraphs
-    This is intentionally simple (no external deps).
+    Intentionally simple (no external deps).
     """
     lines = md_text.splitlines()
     html_lines = []
@@ -218,12 +153,12 @@ def main(days: int = 7):
     (BASE_DIR / "data").mkdir(parents=True, exist_ok=True)
     (BASE_DIR / "output").mkdir(parents=True, exist_ok=True)
 
-    now = datetime.now(timezone.utc)
+    now      = datetime.now(timezone.utc)
     week_ago = now - timedelta(days=days)
 
     analyses = load_analysis_objects(LOG)
 
-    # Filter to last 7 days
+    # Filter to the requested window
     recent = []
     for a in analyses:
         dt = pick_event_time(a)
@@ -233,15 +168,18 @@ def main(days: int = 7):
 
     themes = load_themes().get("active_themes", [])
 
-    reinforce = Counter()
+    reinforce  = Counter()
     contradict = Counter()
-    tags = Counter()
+    tags       = Counter()
 
-    # Action stability tracking
-    action_changes = []
-    last_action_by_key = {}
+    # Stance-change tracking (monotonic escalation vs flip-flop — caller interprets)
+    stance_changes: list = []
+    last_action_by_key: dict = {}
 
-    confidence_changes = []
+    confidence_changes: list = []
+
+    # Collect Act items for the top-of-memo callout
+    act_items: list = []
 
     for dt, a in recent:
         for t in (a.get("tags", []) or []):
@@ -253,7 +191,7 @@ def main(days: int = 7):
         for th in (a.get("contradicts", []) or []):
             contradict[str(th)] += 1
 
-        keys = []
+        keys: list = []
         keys.extend([str(x) for x in (a.get("reinforces", []) or []) if x])
         keys.extend([str(x) for x in (a.get("tags", []) or []) if x])
 
@@ -261,12 +199,21 @@ def main(days: int = 7):
             prev = last_action_by_key.get(key)
             curr = a.get("action")
             if prev and curr and prev != curr:
-                action_changes.append((dt.isoformat(), key, prev, curr, a.get("title", "")))
+                stance_changes.append((dt.isoformat(), key, prev, curr, a.get("title", "")))
             if curr:
                 last_action_by_key[key] = curr
 
         if a.get("updates_confidence"):
             confidence_changes.append((dt.isoformat(), str(a.get("updates_confidence")), a.get("title", "")))
+
+        if a.get("action") == "Act":
+            act_items.append((dt, a))
+
+    # Sort Act items: most recent first, then highest confidence within same timestamp
+    act_items.sort(
+        key=lambda x: (x[0], int(x[1].get("confidence", 0) or 0)),
+        reverse=True,
+    )
 
     lines = []
     lines.append("# Weekly WSJ Signal Memo\n")
@@ -274,7 +221,18 @@ def main(days: int = 7):
     lines.append(f"- Log source: {LOG.name}")
     lines.append(f"- Parsed entries (last {days}d): {len(recent)}\n")
 
-    lines.append("## Theme reinforcement\n")
+    # ── Act items — first, most urgent ───────────────────────────────────────
+    lines.append("## Act items\n")
+    if act_items:
+        for dt, a in act_items:
+            lines.append(f"- {dt.isoformat()} — **{a.get('title', '')}** ({a.get('category', '')})")
+            for trigger in (a.get("action_triggers", []) or []):
+                lines.append(f"  - Trigger: {trigger}")
+    else:
+        lines.append(f"- No 'Act' items in the last {days} days.")
+
+    # ── Theme reinforcement ───────────────────────────────────────────────────
+    lines.append("\n## Theme reinforcement\n")
     if reinforce:
         for name, cnt in reinforce.most_common(10):
             contra = contradict.get(name, 0)
@@ -285,8 +243,8 @@ def main(days: int = 7):
     lines.append("\n## Active theme checklist (from themes.json)\n")
     if themes:
         for t in themes:
-            name = t.get("name", "(unnamed)")
-            thesis = t.get("thesis", "")
+            name    = t.get("name", "(unnamed)")
+            thesis  = t.get("thesis", "")
             lines.append(f"- **{name}** — {thesis}")
             triggers = t.get("watch_triggers", []) or []
             if triggers:
@@ -294,12 +252,14 @@ def main(days: int = 7):
     else:
         lines.append("- No active themes configured.")
 
-    lines.append("\n## Action changes (instability)\n")
-    if action_changes:
-        for ts, key, prev, curr, title in action_changes[:30]:
+    # ── Stance changes ────────────────────────────────────────────────────────
+    lines.append("\n## Stance changes\n")
+    lines.append("_(monotonic escalation = thesis developing; back-and-forth = reassess the thesis)_\n")
+    if stance_changes:
+        for ts, key, prev, curr, title in stance_changes[:30]:
             lines.append(f"- {ts} — **{key}**: {prev} → {curr} ({title})")
     else:
-        lines.append(f"- No action flips detected in the last {days} days.")
+        lines.append(f"- No stance changes detected in the last {days} days.")
 
     lines.append("\n## Confidence updates\n")
     if confidence_changes:
@@ -320,7 +280,7 @@ def main(days: int = 7):
     OUT_MD.write_text(md_text, encoding="utf-8")
     OUT_HTML.write_text(md_to_basic_html(md_text), encoding="utf-8")
 
-    log.info("Parsed %d entries from last 7 days", len(recent))
+    log.info("Parsed %d entries from last %d days", len(recent), days)
     log.info("Wrote %s", OUT_MD.resolve())
     log.info("Wrote %s", OUT_HTML.resolve())
 

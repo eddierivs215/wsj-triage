@@ -56,23 +56,33 @@ def save():
     if not isinstance(obj, dict):
         return jsonify({"ok": False, "error": "Payload must be a JSON object"}), 400
 
-    # Minimal required keys (adjust if you want stricter enforcement)
+    # Reject triage-only fields — schema bleed prevention.
+    # triage_decision belongs only in the triage pipeline; analysis payloads use 'action'.
+    TRIAGE_ONLY_FIELDS = {"triage_decision"}
+    leaked = [k for k in obj if k in TRIAGE_ONLY_FIELDS]
+    if leaked:
+        return jsonify({
+            "ok": False,
+            "error": f"triage_decision is a triage-only field and must not appear in analysis payloads. Use 'action' instead.",
+        }), 400
+
+    # Minimal required keys
     required = ["title", "source", "category", "signal_strength", "time_horizon", "action", "confidence"]
     missing = [k for k in required if k not in obj]
     if missing:
         return jsonify({"ok": False, "error": f"Missing keys: {missing}"}), 400
 
-    # Validate enum fields
+    # Validate enum fields — error messages include the full set of allowed values
     VALID_ENUMS = {
-        "category": ["Policy/Regulatory", "Earnings", "Geopolitics", "Markets", "Structural", "Cyclical", "Narrative/Opinion", "Noise"],
+        "category":        ["Policy/Regulatory", "Earnings", "Geopolitics", "Markets", "Structural", "Cyclical", "Narrative/Opinion", "Noise"],
         "signal_strength": ["High", "Medium", "Low"],
-        "time_horizon": ["Immediate", "Near-term", "Structural"],
-        "action": ["Act", "Prepare/Monitor", "No Action"],
+        "time_horizon":    ["Immediate", "Near-term", "Structural"],
+        "action":          ["Act", "Prepare/Monitor", "No Action"],
     }
     for field, allowed in VALID_ENUMS.items():
         val = obj.get(field)
         if val not in allowed:
-            return jsonify({"ok": False, "error": f"Invalid {field}: {val!r}. Allowed: {allowed}"}), 400
+            return jsonify({"ok": False, "error": f"Invalid {field}: {val!r}. Allowed values: {allowed}"}), 400
 
     obj["server_received_at"] = datetime.now(timezone.utc).isoformat()
 

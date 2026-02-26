@@ -18,19 +18,23 @@ def cmd_synthesis(args):
     main(days=args.days)
 
 
-parser = argparse.ArgumentParser(prog="wsj-triage", description="WSJ Signal Triage System")
-sub = parser.add_subparsers(dest="command", required=True)
+def main():
+    parser = argparse.ArgumentParser(prog="wsj-triage", description="WSJ Signal Triage System")
+    sub = parser.add_subparsers(dest="command", required=True)
 
-sub.add_parser("triage", help="Fetch RSS, score articles, generate dashboard")
+    sub.add_parser("triage", help="Fetch RSS, score articles, generate dashboard")
 
-serve_p = sub.add_parser("serve", help="Start local Flask server for analysis workflow")
-serve_p.add_argument("--port", type=int, default=5050, help="Port (default: 5050)")
+    serve_p = sub.add_parser("serve", help="Start local Flask server for analysis workflow")
+    serve_p.add_argument("--port", type=int, default=5050, help="Port (default: 5050)")
 
-synth_p = sub.add_parser("synthesis", help="Generate weekly memo from analysis log")
-synth_p.add_argument("--days", type=int, default=7, help="Analysis window in days (default: 7)")
+    synth_p = sub.add_parser("synthesis", help="Generate weekly memo from analysis log")
+    synth_p.add_argument("--days", type=int, default=7, help="Analysis window in days (default: 7)")
 
-COMMANDS = {"triage": cmd_triage, "serve": cmd_serve, "synthesis": cmd_synthesis}
+    commands = {"triage": cmd_triage, "serve": cmd_serve, "synthesis": cmd_synthesis}
+
+    args = parser.parse_args()
+    commands[args.command](args)
+
 
 if __name__ == "__main__":
-    args = parser.parse_args()
-    COMMANDS[args.command](args)
+    main()

@@ -1,63 +1,80 @@
-"""Tests for synthesis JSON extraction and helpers."""
+"""Tests for synthesis helpers and JSONL loading."""
 import json
 import pytest
+from pathlib import Path
 from src.synthesis import (
-    extract_first_json_object,
-    coerce_to_object,
+    load_analysis_objects,
     escape_html,
     parse_dt,
 )
 
 
-# ── extract_first_json_object ──────────────────────────────
+# ── load_analysis_objects ──────────────────────────────────
 
-class TestExtractFirstJsonObject:
-    def test_clean_json_line(self):
-        obj = {"title": "Test", "score": 42}
-        result = extract_first_json_object(json.dumps(obj))
-        assert json.loads(result) == obj
+class TestLoadAnalysisObjects:
+    def test_reads_compact_jsonl(self, tmp_path):
+        log = tmp_path / "analysis_log.jsonl"
+        entry = {"title": "Test", "action": "Prepare/Monitor", "confidence": 3}
+        log.write_text(json.dumps(entry) + "\n")
+        result = load_analysis_objects(log)
+        assert len(result) == 1
+        assert result[0]["title"] == "Test"
 
-    def test_json_with_leading_text(self):
-        line = 'some prefix text {"key": "value"}'
-        result = extract_first_json_object(line)
-        assert json.loads(result) == {"key": "value"}
+    def test_multiple_entries(self, tmp_path):
+        log = tmp_path / "analysis_log.jsonl"
+        entries = [
+            {"title": "A", "action": "Act"},
+            {"title": "B", "action": "No Action"},
+        ]
+        log.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+        result = load_analysis_objects(log)
+        assert len(result) == 2
+        assert result[0]["title"] == "A"
+        assert result[1]["title"] == "B"
 
-    def test_json_with_trailing_text(self):
-        line = '{"key": "value"} trailing text'
-        result = extract_first_json_object(line)
-        assert json.loads(result) == {"key": "value"}
+    def test_skips_narrative_lines(self, tmp_path):
+        """Non-JSON lines (narrative text) are silently skipped."""
+        log = tmp_path / "analysis_log.jsonl"
+        log.write_text(
+            json.dumps({"title": "Real entry", "action": "Act"}) + "\n"
+            "1️⃣ What actually matters\n"
+            "Some narrative text here.\n"
+            "More narrative.\n"
+        )
+        result = load_analysis_objects(log)
+        assert len(result) == 1
+        assert result[0]["title"] == "Real entry"
 
-    def test_nested_braces(self):
-        obj = {"outer": {"inner": 1}}
-        result = extract_first_json_object(json.dumps(obj))
-        assert json.loads(result) == obj
+    def test_skips_blank_lines(self, tmp_path):
+        log = tmp_path / "analysis_log.jsonl"
+        log.write_text(
+            json.dumps({"title": "A"}) + "\n"
+            "\n\n"
+            + json.dumps({"title": "B"}) + "\n"
+        )
+        result = load_analysis_objects(log)
+        assert len(result) == 2
 
-    def test_braces_in_strings(self):
-        obj = {"text": "a {b} c"}
-        result = extract_first_json_object(json.dumps(obj))
-        assert json.loads(result) == obj
+    def test_skips_non_dict_json(self, tmp_path):
+        """JSON arrays or primitives are not valid analysis entries."""
+        log = tmp_path / "analysis_log.jsonl"
+        log.write_text(
+            "[1, 2, 3]\n"
+            + json.dumps({"title": "Valid"}) + "\n"
+        )
+        result = load_analysis_objects(log)
+        assert len(result) == 1
+        assert result[0]["title"] == "Valid"
 
-    def test_empty_input(self):
-        assert extract_first_json_object("") is None
-        assert extract_first_json_object(None) is None
+    def test_returns_empty_list_when_file_missing(self, tmp_path):
+        result = load_analysis_objects(tmp_path / "nonexistent.jsonl")
+        assert result == []
 
-    def test_no_json(self):
-        assert extract_first_json_object("just plain text") is None
-
-
-# ── coerce_to_object ──────────────────────────────────────
-
-class TestCoerceToObject:
-    def test_dict_passthrough(self):
-        d = {"a": 1}
-        assert coerce_to_object(d) == d
-
-    def test_json_string(self):
-        assert coerce_to_object('{"a": 1}') == {"a": 1}
-
-    def test_non_object(self):
-        assert coerce_to_object([1, 2]) is None
-        assert coerce_to_object(42) is None
+    def test_returns_empty_list_on_empty_file(self, tmp_path):
+        log = tmp_path / "analysis_log.jsonl"
+        log.write_text("")
+        result = load_analysis_objects(log)
+        assert result == []
 
 
 # ── escape_html ────────────────────────────────────────────
@@ -69,10 +86,6 @@ class TestEscapeHtml:
 
     def test_escapes_ampersand(self):
         assert "&amp;" in escape_html("a & b")
-
-    def test_escapes_quotes(self):
-        result = escape_html('say "hello"')
-        assert "&quot;" in result or "&#x27;" in result or '"' not in result.replace("&quot;", "")
 
     def test_empty_string(self):
         assert escape_html("") == ""

@@ -1,0 +1,6 @@
+{
+  "_comment": "Tune these thresholds based on empirical score distribution. Run triage for a week and histogram raw_score to calibrate.",
+  "baseline": 35,
+  "high_threshold": 62,
+  "medium_threshold": 45
+}
