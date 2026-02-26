@@ -162,3 +162,32 @@ class TestApiAnalysesEndpoint:
         data = r.get_json()
         assert len(data) == 1
         assert data[0]["title"] == "Test article"
+
+
+# ── /api/analyze endpoint ─────────────────────────────────────────────────────
+
+class TestApiAnalyzeEndpoint:
+    def test_returns_503_when_no_api_key(self, client, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        r = client.post("/api/analyze", json={"article": "Some text"})
+        assert r.status_code == 503
+        assert "ANTHROPIC_API_KEY" in r.get_json()["error"]
+
+    def test_returns_400_when_article_missing(self, client, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        r = client.post("/api/analyze", json={"url": "https://example.com"})
+        assert r.status_code == 400
+        assert "article" in r.get_json()["error"]
+
+    def test_parse_analysis_response_extracts_json_and_narrative(self):
+        from src.server import _parse_analysis_response
+        raw = '{"title": "Test", "action": "No Action"}\n\n1. What matters: something important.'
+        obj, narrative = _parse_analysis_response(raw)
+        assert obj["title"] == "Test"
+        assert "What matters" in narrative
+
+    def test_parse_analysis_response_raises_when_no_json(self):
+        from src.server import _parse_analysis_response
+        import pytest
+        with pytest.raises(ValueError, match="No JSON object"):
+            _parse_analysis_response("Just narrative text, no JSON here.")
